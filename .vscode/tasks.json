@@ -1,0 +1,74 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"type": "cargo",
+			"command": "build",
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "build",
+			"label": "cargo build",
+			"options": {
+				"shell": {
+					"executable": "powershell.exe"
+				}
+			}
+		},
+		{
+			"type": "cargo",
+			"command": "check",
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "build",
+			"label": "cargo check",
+			"options": {
+				"shell": {
+					"executable": "powershell.exe"
+				}
+			}
+		},
+		{
+			"type": "cargo",
+			"command": "clean",
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "clean",
+			"label": "cargo clean",
+			"options": {
+				"shell": {
+					"executable": "powershell.exe"
+				}
+			}
+		},
+		{
+			"type": "cargo",
+			"command": "run",
+			"problemMatcher": [
+				"$rustc"
+			],
+			"label": "cargo run",
+			"options": {
+				"shell": {
+					"executable": "powershell.exe"
+				}
+			}
+		},
+		{
+			"type": "cargo",
+			"command": "test",
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "test",
+			"label": "cargo test",
+			"options": {
+				"shell": {
+					"executable": "powershell.exe"
+				}
+			}
+		}
+	]
+}
