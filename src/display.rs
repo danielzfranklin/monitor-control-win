@@ -37,6 +37,12 @@ pub struct DisplayDevice {
 impl DisplayDevice {
     // Inspired by <https://ofekshilon.com/2014/06/19/reading-specific-monitor-dimensions/>
 
+    /// List all devices
+    ///
+    /// ```
+    /// # use monitor_control_win::DisplayDevice;
+    /// let list = DisplayDevice::list();
+    /// ```
     pub fn list() -> Vec<Self> {
         let mut display = DISPLAY_DEVICEW {
             cb: mem::size_of::<DISPLAY_DEVICEW>() as u32,
@@ -67,6 +73,15 @@ impl DisplayDevice {
         list
     }
 
+    /// Get the colorspace of a device
+    ///
+    /// ```
+    /// # use monitor_control_win::DisplayDevice;
+    /// let devices = DisplayDevice::list();
+    /// let device = devices.first().expect("At least one device exists");
+    /// let colorspace = device.colorspace()?;
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
     pub fn colorspace(&self) -> Result<ColorSpace, DisplayDeviceError> {
         let hdc = self.hdc()?;
         let ident = ptr::NonNull::new(unsafe { GetColorSpace(hdc.as_ptr()) })
@@ -273,12 +288,6 @@ pub enum DisplayDeviceError {
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
-
-    #[test]
-    fn can_list() {
-        let _devices = DisplayDevice::list();
-    }
-
     #[test]
     fn can_get_hdc() {
         let devs = DisplayDevice::list();
@@ -303,12 +312,5 @@ mod tests {
             eprintln!("input = {}", input);
             assert_relative_eq!(fxp230_to_f32(*input), output, epsilon = f32::EPSILON);
         }
-    }
-
-    #[test]
-    fn can_get_colorspace() {
-        let devs = DisplayDevice::list();
-        let dev = devs.first().unwrap();
-        let _spaces = dev.colorspace().unwrap();
     }
 }
