@@ -4,20 +4,11 @@ use derivative::Derivative;
 use std::{mem, ptr};
 use thiserror::Error;
 use winapi::{
-    shared::windef::HDC__,
+    shared::{windef::HDC__, winerror},
     um::{
-        wingdi::{
-            CreateDCW, GetColorSpace, GetLogColorSpaceW, LCS_sRGB, CIEXYZ, CIEXYZTRIPLE,
-            DISPLAY_DEVICEW, DISPLAY_DEVICE_ACC_DRIVER, DISPLAY_DEVICE_ACTIVE,
-            DISPLAY_DEVICE_ATTACHED, DISPLAY_DEVICE_ATTACHED_TO_DESKTOP, DISPLAY_DEVICE_DISCONNECT,
-            DISPLAY_DEVICE_MIRRORING_DRIVER, DISPLAY_DEVICE_MODESPRUNED,
-            DISPLAY_DEVICE_MULTI_DRIVER, DISPLAY_DEVICE_PRIMARY_DEVICE, DISPLAY_DEVICE_RDPUDD,
-            DISPLAY_DEVICE_REMOTE, DISPLAY_DEVICE_REMOVABLE, DISPLAY_DEVICE_TS_COMPATIBLE,
-            DISPLAY_DEVICE_UNSAFE_MODES_ON, DISPLAY_DEVICE_VGA_COMPATIBLE, LCSGAMUTMATCH,
-            LCS_CALIBRATED_RGB, LCS_GM_ABS_COLORIMETRIC, LCS_GM_BUSINESS, LCS_GM_GRAPHICS,
-            LCS_GM_IMAGES, LCS_WINDOWS_COLOR_SPACE, LOGCOLORSPACEW,
-        },
+        wingdi::*,
         winnt::LPCWSTR,
+        winreg::{RegEnumValueW, RegGetValueW, HKEY_LOCAL_MACHINE},
         winuser::EnumDisplayDevicesW,
     },
 };
@@ -32,6 +23,8 @@ pub struct DisplayDevice {
     pub key: String,
     #[derivative(Debug = "ignore")]
     ffi_device: [u16; 32],
+    #[derivative(Debug = "ignore")]
+    ffi_key: [u16; 128],
 }
 
 impl DisplayDevice {
@@ -83,6 +76,7 @@ impl DisplayDevice {
                 id,
                 key,
                 ffi_device: display.DeviceName,
+                ffi_key: display.DeviceKey,
             });
 
             n += 1;
@@ -119,6 +113,123 @@ impl DisplayDevice {
         }
 
         Ok(space.into())
+    }
+
+    /// Get the EDID of a device, if one exists.
+    ///
+    /// In general devices representing real monitors will have EDIDs.
+    ///
+    /// ```
+    /// # use monitor_control_win::DisplayDevice;
+    /// let device = DisplayDevice::primary()?;
+    /// let edids = device.edid()?;
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn edid(&self) -> Result<Option<Vec<u8>>, DisplayDeviceError> {
+        if self.ffi_key[0] == 0 {
+            return Ok(None);
+        }
+
+        let key_name = &self.ffi_key as *const _ as *const u16;
+        let value_name_backing = "EDID".encode_utf16().collect::<Vec<_>>();
+        let value_name = &value_name_backing as *const _ as *const u16;
+
+        let mut value_type = 0;
+        let value_capacity = 1024;
+        let mut value = Vec::with_capacity(value_capacity);
+        let mut value_size = value.len() as u32;
+        let status = unsafe {
+            RegGetValueW(
+                HKEY_LOCAL_MACHINE,
+                key_name,
+                value_name,
+                0,
+                &mut value_type,
+                &mut value as *mut Vec<_> as *mut _,
+                &mut value_size,
+            )
+        };
+
+        if status != winerror::ERROR_SUCCESS as i32 {
+            return Err(DisplayDeviceError::GetReg(status));
+        };
+
+        let value_size = value_size as usize;
+        assert!(value_size <= value_capacity);
+        unsafe {
+            value.set_len(value_size);
+        }
+
+        Ok(Some(value))
+    }
+
+    fn available_reg_values(&self) -> Result<Vec<Vec<u8>>, DisplayDeviceError> {
+        if self.ffi_key[0] == 0 {
+            return Ok(vec![]);
+        }
+
+        let key_name = &self.ffi_key as *const _ as *const u16;
+
+        let mut i = 0;
+
+        loop {
+            let mut name_capacity = 0;
+            let mut value_capacity = 0;
+            let mut value_type = 0;
+
+            let status = unsafe {
+                RegEnumValueW(
+                    HKEY_LOCAL_MACHINE,
+                    i,
+                    ptr::null_mut(),
+                    &mut name_capacity,
+                    ptr::null_mut(),
+                    &mut value_type,
+                    ptr::null_mut(),
+                    &mut value_capacity,
+                )
+            };
+            match status as u32 {
+                winerror::ERROR_NO_MORE_ITEMS => break,
+                winerror::ERROR_MORE_DATA => (),
+                _ => return Err(DisplayDeviceError::GetReg(status)),
+            }
+
+            let name_capacity = name_capacity as usize;
+            let value_capacity = value_capacity as usize;
+            let mut name_len = 0;
+            let mut value_len = 0;
+            let mut name = Vec::with_capacity(name_capacity);
+            let mut value = Vec::<u16>::with_capacity(value_capacity);
+
+            let status = unsafe {
+                RegEnumValueW(
+                    HKEY_LOCAL_MACHINE,
+                    i,
+                    &mut name as *mut Vec<_> as *mut u16,
+                    &mut name_len,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    &mut value as *mut Vec<_> as *mut u8,
+                    &mut value_len,
+                )
+            };
+            if status != winerror::ERROR_SUCCESS as i32 {
+                return Err(DisplayDeviceError::GetReg(status));
+            }
+
+            unsafe {
+                name.set_len(name_len as usize);
+                value.set_len(value_len as usize);
+            }
+
+            let name = String::from_utf16_lossy(&name);
+            eprintln!("{}", name);
+
+            i += 1;
+        }
+
+        panic!()
     }
 
     fn hdc(&self) -> Result<ptr::NonNull<HDC__>, DisplayDeviceError> {
@@ -295,10 +406,14 @@ fn fxp_8dot8_to_f32(fxp: u32) -> f32 {
 
 #[derive(Error, Debug, Eq, PartialEq, Clone)]
 pub enum DisplayDeviceError {
+    #[error("No primary device exists. Are you running interactively?")]
+    NoPrimaryDevice,
     #[error("Failed to create device context")]
     CreateCtx,
     #[error("Failed to get color space")]
     GetColorSpace,
+    #[error("Failed to get device registry key. From windows error {0}")]
+    GetReg(i32),
 }
 
 #[cfg(test)]
@@ -329,5 +444,20 @@ mod tests {
             eprintln!("input = {}", input);
             assert_relative_eq!(fxp230_to_f32(*input), output, epsilon = f32::EPSILON);
         }
+    }
+
+    #[test]
+    fn at_least_one_device_has_edid() {
+        let edids = DisplayDevice::list()
+            .iter()
+            .map(DisplayDevice::edid)
+            .collect::<Vec<_>>();
+        panic!("{:#?}", edids);
+    }
+
+    #[test]
+    fn list() {
+        let dev = DisplayDevice::primary().unwrap();
+        dev.available_reg_values().unwrap();
     }
 }
