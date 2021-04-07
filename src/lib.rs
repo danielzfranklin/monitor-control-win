@@ -4,6 +4,9 @@ use winapi::shared::windef::RECT;
 pub mod display;
 pub mod monitor;
 
+pub use display::DisplayDevice;
+pub use monitor::Monitor;
+
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
 pub struct Rect {
     pub left: i32,
