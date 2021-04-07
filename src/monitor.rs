@@ -57,13 +57,9 @@ impl Monitor {
 
     fn get(h: HMONITOR) -> Result<Self, MonitorError> {
         let mut info = MONITORINFOEXW {
-            cbSize: Default::default(),
-            rcMonitor: Rect::default_sys(),
-            rcWork: Rect::default_sys(),
-            dwFlags: Default::default(),
-            szDevice: Default::default(),
+            cbSize: mem::size_of::<MONITORINFOEXW>() as u32,
+            ..Default::default()
         };
-        info.cbSize = mem::size_of::<MONITORINFOEXW>() as u32;
 
         unsafe {
             GetMonitorInfoW(h, &mut info as *mut MONITORINFOEXW as *mut MONITORINFO);

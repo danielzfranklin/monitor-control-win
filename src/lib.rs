@@ -21,15 +21,6 @@ impl Rect {
             bottom: sys.bottom,
         }
     }
-
-    pub(crate) fn default_sys() -> RECT {
-        RECT {
-            left: Default::default(),
-            top: Default::default(),
-            right: Default::default(),
-            bottom: Default::default(),
-        }
-    }
 }
 
 pub(crate) fn wchars_to_string(wchars: &[u16]) -> String {

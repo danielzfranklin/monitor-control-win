@@ -39,14 +39,9 @@ impl DisplayDevice {
 
     pub fn list() -> Vec<Self> {
         let mut display = DISPLAY_DEVICEW {
-            cb: 0,
-            DeviceName: [0; 32],
-            DeviceString: [0; 128],
-            StateFlags: 0,
-            DeviceID: [0; 128],
-            DeviceKey: [0; 128],
+            cb: mem::size_of::<DISPLAY_DEVICEW>() as u32,
+            ..Default::default()
         };
-        display.cb = mem::size_of::<DISPLAY_DEVICEW>() as u32;
 
         let mut list = Vec::new();
         let mut n = 0;
@@ -78,35 +73,7 @@ impl DisplayDevice {
             .ok_or(DisplayDeviceError::GetColorSpace)?;
 
         // NOTE: Log stands for logical
-
-        let mut space = LOGCOLORSPACEW {
-            lcsSignature: 0,
-            lcsVersion: 0,
-            lcsSize: 0,
-            lcsCSType: 0,
-            lcsIntent: 0,
-            lcsEndpoints: CIEXYZTRIPLE {
-                ciexyzRed: CIEXYZ {
-                    ciexyzX: 0,
-                    ciexyzY: 0,
-                    ciexyzZ: 0,
-                },
-                ciexyzGreen: CIEXYZ {
-                    ciexyzX: 0,
-                    ciexyzY: 0,
-                    ciexyzZ: 0,
-                },
-                ciexyzBlue: CIEXYZ {
-                    ciexyzX: 0,
-                    ciexyzY: 0,
-                    ciexyzZ: 0,
-                },
-            },
-            lcsGammaRed: 0,
-            lcsGammaGreen: 0,
-            lcsGammaBlue: 0,
-            lcsFilename: [0; 260],
-        };
+        let mut space = LOGCOLORSPACEW::default();
 
         unsafe {
             let status = GetLogColorSpaceW(
