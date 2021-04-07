@@ -37,6 +37,24 @@ pub struct DisplayDevice {
 impl DisplayDevice {
     // Inspired by <https://ofekshilon.com/2014/06/19/reading-specific-monitor-dimensions/>
 
+    /// Get the primary device
+    ///
+    /// ```
+    /// # use monitor_control_win::DisplayDevice;
+    /// let device = DisplayDevice::primary()?;
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// For a system with a single display card, there is always a primary
+    /// device so long as you are running in interactive mode. For a system with
+    /// multiple display cards, only one device can be primary.
+    pub fn primary() -> Result<Self, DisplayDeviceError> {
+        Self::list()
+            .into_iter()
+            .find(|d| d.state.contains(State::PRIMARY_DEVICE))
+            .ok_or(DisplayDeviceError::NoPrimaryDevice)
+    }
+
     /// List all devices
     ///
     /// ```
@@ -77,8 +95,7 @@ impl DisplayDevice {
     ///
     /// ```
     /// # use monitor_control_win::DisplayDevice;
-    /// let devices = DisplayDevice::list();
-    /// let device = devices.first().expect("At least one device exists");
+    /// let device = DisplayDevice::primary()?;
     /// let colorspace = device.colorspace()?;
     /// # Ok::<_, Box<dyn std::error::Error>>(())
     /// ```
