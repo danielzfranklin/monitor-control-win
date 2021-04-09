@@ -1,4 +1,5 @@
-use super::*;
+use crate::*;
+use physical_monitor::PhysicalMonitorError;
 use std::{mem, ptr};
 use thiserror::Error;
 use winapi::{
@@ -13,7 +14,7 @@ use winapi::{
 
 // Note that if the monitor is not the primary display monitor, some of the
 // coordinates may be negative values.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Monitor {
     // ffi handle
     pub h: HMONITOR,
@@ -27,6 +28,32 @@ pub struct Monitor {
 }
 
 impl Monitor {
+    /// Get the primary monitor.
+    ///
+    /// The implimentation involves looking through every monitor returned by
+    /// [`Self::list`].
+    ///
+    /// ```
+    /// # use monitor_control_win::Monitor;
+    /// let monitor = Monitor::primary()?;
+    /// println!("{:#?}", monitor);
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn primary() -> Result<Self, MonitorError> {
+        Self::list()?
+            .into_iter()
+            .find(|m| m.is_primary)
+            .ok_or(MonitorError::NoPrimary)
+    }
+
+    /// List all monitors.
+    ///
+    /// ```
+    /// # use monitor_control_win::Monitor;
+    /// let monitors = Monitor::list()?;
+    /// println!("{:#?}", monitors);
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
     pub fn list() -> Result<Vec<Self>, MonitorError> {
         extern "system" fn cb(
             // A handle to the display monitor. This value will always be non-NULL.
@@ -53,6 +80,19 @@ impl Monitor {
         }
 
         list.into_iter().collect()
+    }
+
+    /// Get associated physical monitors.
+    ///
+    /// ```
+    /// # use monitor_control_win::Monitor;
+    /// let monitor = Monitor::primary()?;
+    /// let physical_monitors = monitor.physical_monitors()?;
+    /// println!("{:#?}", physical_monitors);
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn physical_monitors(&self) -> Result<Vec<PhysicalMonitor>, PhysicalMonitorError> {
+        PhysicalMonitor::list(self)
     }
 
     fn get(h: HMONITOR) -> Result<Self, MonitorError> {
@@ -88,6 +128,8 @@ impl Monitor {
 pub enum MonitorError {
     #[error("Got placeholder monitor (WinDisc). Are you running in a non-interactive session?")]
     GotPlaceholder,
+    #[error("No primary monitor")]
+    NoPrimary,
 }
 
 #[cfg(test)]

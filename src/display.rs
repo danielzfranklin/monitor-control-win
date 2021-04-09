@@ -1,15 +1,26 @@
 use super::*;
 use bitflags::bitflags;
 use derivative::Derivative;
-use std::{mem, ptr};
+use std::{
+    fmt::{Debug, Display},
+    mem, ptr,
+};
 use thiserror::Error;
 use winapi::{
-    shared::{windef::HDC__, winerror},
+    ctypes::c_void,
+    shared::{
+        minwindef::{HKEY, TRUE},
+        windef::HDC__,
+        winerror,
+    },
     um::{
+        errhandlingapi::GetLastError,
+        handleapi::INVALID_HANDLE_VALUE,
+        setupapi::*,
         wingdi::*,
-        winnt::LPCWSTR,
-        winreg::{RegEnumValueW, RegGetValueW, HKEY_LOCAL_MACHINE},
-        winuser::EnumDisplayDevicesW,
+        winnt::{KEY_READ, LPCWSTR},
+        winreg::*,
+        winuser::{EnumDisplayDevicesW, EDD_GET_DEVICE_INTERFACE_NAME},
     },
 };
 
@@ -25,10 +36,14 @@ pub struct DisplayDevice {
     ffi_device: [u16; 32],
     #[derivative(Debug = "ignore")]
     ffi_key: [u16; 128],
+    #[derivative(Debug = "ignore")]
+    ffi_id: [u16; 128],
 }
 
 impl DisplayDevice {
     // Inspired by <https://ofekshilon.com/2014/06/19/reading-specific-monitor-dimensions/>
+    pub const GUID_DEVINTERFACE_MONITOR: GUID =
+        guid(0xE6F07B5F, 0xEE97, 0x4a90, 0xB076, 0x33F57BF4EAA7);
 
     /// Get the primary device
     ///
@@ -53,6 +68,7 @@ impl DisplayDevice {
     /// ```
     /// # use monitor_control_win::DisplayDevice;
     /// let list = DisplayDevice::list();
+    /// println!("{:#?}", list);
     /// ```
     pub fn list() -> Vec<Self> {
         let mut display = DISPLAY_DEVICEW {
@@ -77,12 +93,46 @@ impl DisplayDevice {
                 key,
                 ffi_device: display.DeviceName,
                 ffi_key: display.DeviceKey,
+                ffi_id: display.DeviceID,
             });
 
             n += 1;
         }
 
         list
+    }
+
+    /// Get the device's interface name for [`Self::GUID_DEVINTERFACE_MONITOR`],
+    /// which is registered by the operating system on a per monitor basis.
+    ///
+    /// ```
+    /// # use monitor_control_win::DisplayDevice;
+    /// let name = DisplayDevice::primary()?.interface_name()?;
+    /// println!("{:?}", name);
+    /// # Ok::<_, Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// The interface name can be used with SetupAPI functions and serves as a
+    /// link between GDI monitor devices and SetupAPI monitor devices.
+    pub fn interface_name(&self) -> Result<InterfaceName, DisplayDeviceError> {
+        let mut display = DISPLAY_DEVICEW {
+            cb: mem::size_of::<DISPLAY_DEVICEW>() as u32,
+            ..Default::default()
+        };
+
+        let status = unsafe {
+            EnumDisplayDevicesW(
+                &self.ffi_device[0],
+                0,
+                &mut display,
+                EDD_GET_DEVICE_INTERFACE_NAME,
+            )
+        };
+        if status == 0 {
+            return Err(DisplayDeviceError::GetNonexistentInterfaceName);
+        }
+
+        Ok(InterfaceName(display.DeviceID))
     }
 
     /// Get the colorspace of a device
@@ -102,12 +152,12 @@ impl DisplayDevice {
         let mut space = LOGCOLORSPACEW::default();
 
         unsafe {
-            let status = GetLogColorSpaceW(
+            let is_success = GetLogColorSpaceW(
                 ident.as_ptr(),
                 &mut space,
                 mem::size_of::<LOGCOLORSPACEW>() as u32,
             );
-            if status != 1 {
+            if !unffi_bool(is_success) {
                 return Err(DisplayDeviceError::GetColorSpace);
             }
         }
@@ -115,127 +165,157 @@ impl DisplayDevice {
         Ok(space.into())
     }
 
-    /// Get the EDID of a device, if one exists.
-    ///
-    /// In general devices representing real monitors will have EDIDs.
-    ///
-    /// ```
-    /// # use monitor_control_win::DisplayDevice;
-    /// let device = DisplayDevice::primary()?;
-    /// let edids = device.edid()?;
-    /// # Ok::<_, Box<dyn std::error::Error>>(())
-    /// ```
-    pub fn edid(&self) -> Result<Option<Vec<u8>>, DisplayDeviceError> {
-        if self.ffi_key[0] == 0 {
-            return Ok(None);
-        }
-
-        let key_name = &self.ffi_key as *const _ as *const u16;
-        let value_name_backing = "EDID".encode_utf16().collect::<Vec<_>>();
-        let value_name = &value_name_backing as *const _ as *const u16;
-
-        let mut value_type = 0;
-        let value_capacity = 1024;
-        let mut value = Vec::with_capacity(value_capacity);
-        let mut value_size = value.len() as u32;
-        let status = unsafe {
-            RegGetValueW(
-                HKEY_LOCAL_MACHINE,
-                key_name,
-                value_name,
-                0,
-                &mut value_type,
-                &mut value as *mut Vec<_> as *mut _,
-                &mut value_size,
-            )
-        };
-
-        if status != winerror::ERROR_SUCCESS as i32 {
-            return Err(DisplayDeviceError::GetReg(status));
-        };
-
-        let value_size = value_size as usize;
-        assert!(value_size <= value_capacity);
-        unsafe {
-            value.set_len(value_size);
-        }
-
-        Ok(Some(value))
-    }
-
-    fn available_reg_values(&self) -> Result<Vec<Vec<u8>>, DisplayDeviceError> {
-        if self.ffi_key[0] == 0 {
-            return Ok(vec![]);
-        }
-
-        let key_name = &self.ffi_key as *const _ as *const u16;
+    fn reg_values(&self) -> Result<Vec<String>, DisplayDeviceError> {
+        let parent = self.reg_key()?;
 
         let mut i = 0;
+        let mut keys = vec![];
 
         loop {
-            let mut name_capacity = 0;
-            let mut value_capacity = 0;
-            let mut value_type = 0;
+            const MAX_KEY_LENGTH: usize = 255;
+            let mut key_len = MAX_KEY_LENGTH as u32;
+            let mut key = vec![0; MAX_KEY_LENGTH];
 
             let status = unsafe {
-                RegEnumValueW(
-                    HKEY_LOCAL_MACHINE,
+                RegEnumKeyExW(
+                    parent,
                     i,
+                    &mut key[0],
+                    &mut key_len,
                     ptr::null_mut(),
-                    &mut name_capacity,
                     ptr::null_mut(),
-                    &mut value_type,
                     ptr::null_mut(),
-                    &mut value_capacity,
+                    ptr::null_mut(),
                 )
             };
             match status as u32 {
+                winerror::ERROR_SUCCESS => (),
                 winerror::ERROR_NO_MORE_ITEMS => break,
-                winerror::ERROR_MORE_DATA => (),
-                _ => return Err(DisplayDeviceError::GetReg(status)),
+                _ => return Err(DisplayDeviceError::GetReg(status.into())),
             }
 
-            let name_capacity = name_capacity as usize;
-            let value_capacity = value_capacity as usize;
-            let mut name_len = 0;
-            let mut value_len = 0;
-            let mut name = Vec::with_capacity(name_capacity);
-            let mut value = Vec::<u16>::with_capacity(value_capacity);
+            key.truncate(key_len as usize);
 
-            let status = unsafe {
-                RegEnumValueW(
-                    HKEY_LOCAL_MACHINE,
-                    i,
-                    &mut name as *mut Vec<_> as *mut u16,
-                    &mut name_len,
-                    ptr::null_mut(),
-                    ptr::null_mut(),
-                    &mut value as *mut Vec<_> as *mut u8,
-                    &mut value_len,
-                )
-            };
-            if status != winerror::ERROR_SUCCESS as i32 {
-                return Err(DisplayDeviceError::GetReg(status));
-            }
-
-            unsafe {
-                name.set_len(name_len as usize);
-                value.set_len(value_len as usize);
-            }
-
-            let name = String::from_utf16_lossy(&name);
-            eprintln!("{}", name);
+            let key = String::from_utf16_lossy(&key);
+            keys.push(key);
 
             i += 1;
         }
 
-        panic!()
+        unsafe {
+            RegCloseKey(parent);
+        }
+
+        Ok(keys)
+    }
+
+    fn reg_key(&self) -> Result<HKEY, DisplayDeviceError> {
+        let info = Info::get(self)?;
+
+        let key = unsafe {
+            SetupDiOpenDevRegKey(
+                info.set,
+                &info.data as *const _ as *mut _,
+                DICS_FLAG_GLOBAL,
+                0, // ignored, as global
+                DIREG_DRV,
+                KEY_READ,
+            )
+        };
+
+        eprintln!("{:#?}", info);
+
+        if key as *mut c_void == INVALID_HANDLE_VALUE {
+            let code = unsafe { GetLastError() };
+            return Err(DisplayDeviceError::GetReg(code.into()));
+        }
+
+        Ok(key)
     }
 
     fn hdc(&self) -> Result<ptr::NonNull<HDC__>, DisplayDeviceError> {
         let device = &self.ffi_device as *const _ as LPCWSTR;
         ptr::NonNull::new(unsafe { CreateDCW(device, device, ptr::null(), ptr::null()) })
             .ok_or(DisplayDeviceError::CreateCtx)
+    }
+}
+
+pub struct InterfaceName([u16; 128]);
+
+impl InterfaceName {
+    pub fn as_ffi(&self) -> &u16 {
+        &self.0[0]
+    }
+}
+
+impl ToString for InterfaceName {
+    fn to_string(&self) -> String {
+        wchars_to_string(&self.0)
+    }
+}
+
+impl Debug for InterfaceName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("InterfaceName")
+            .field(&self.to_string())
+            .finish()
+    }
+}
+
+struct Info {
+    set: *mut c_void,
+    data: SP_DEVINFO_DATA,
+}
+
+impl Info {
+    fn get(dev: &DisplayDevice) -> Result<Self, DisplayDeviceError> {
+        let name = dev.interface_name()?;
+        let set = unsafe {
+            SetupDiGetClassDevsW(
+                &DisplayDevice::GUID_DEVINTERFACE_MONITOR,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                DIGCF_PRESENT,
+            )
+        };
+
+        if set == INVALID_HANDLE_VALUE {
+            return Err(DisplayDeviceError::GetInfoSet);
+        }
+
+        let mut data = SP_DEVINFO_DATA {
+            cbSize: mem::size_of::<SP_DEVINFO_DATA>() as u32,
+            ..SP_DEVINFO_DATA::default()
+        };
+        let status = unsafe { SetupDiEnumDeviceInfo(set, 0, &mut data) };
+        if !unffi_bool(status) {
+            Self::free_set(set);
+            return Err(DisplayDeviceError::GetInfoSetData(WinError::last()));
+        }
+
+        Ok(Self { set, data })
+    }
+
+    fn free_set(set: *mut c_void) {
+        unsafe {
+            SetupDiDestroyDeviceInfoList(set);
+        }
+    }
+}
+
+impl Drop for Info {
+    fn drop(&mut self) {
+        Self::free_set(self.set);
+    }
+}
+
+impl Debug for Info {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Info")
+            .field("set", &self.set)
+            .field("data.ClassGuid", &self.data.ClassGuid)
+            .field("data.DevInst", &self.data.DevInst)
+            .finish()
     }
 }
 
@@ -412,19 +492,39 @@ pub enum DisplayDeviceError {
     CreateCtx,
     #[error("Failed to get color space")]
     GetColorSpace,
-    #[error("Failed to get device registry key. From windows error {0}")]
-    GetReg(i32),
+    #[error("Failed to get device registry key")]
+    GetReg(#[source] WinError),
+    #[error("Failed to get device info set.")]
+    GetInfoSet,
+    #[error("Failed to get info data for info set")]
+    GetInfoSetData(#[source] WinError),
+    #[error("Failed to get interface name: does not exist")]
+    GetNonexistentInterfaceName,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
+
+    fn primary() -> DisplayDevice {
+        DisplayDevice::primary().unwrap()
+    }
+
+    #[test]
+    fn can_get_interface_name() {
+        primary().interface_name().unwrap();
+    }
+
+    #[test]
+    fn can_list() {
+        let list = DisplayDevice::list();
+        panic!("{:#?}", list);
+    }
+
     #[test]
     fn can_get_hdc() {
-        let devs = DisplayDevice::list();
-        let dev = devs.first().unwrap();
-        dev.hdc().unwrap();
+        primary().hdc().unwrap();
     }
 
     #[test]
@@ -446,18 +546,33 @@ mod tests {
         }
     }
 
+    // #[test]
+    // fn at_least_one_device_has_edid() {
+    //     let edids = DisplayDevice::list()
+    //         .iter()
+    //         .map(DisplayDevice::edid)
+    //         .collect::<Vec<_>>();
+    //     panic!("{:#?}", edids);
+    // }
+
     #[test]
-    fn at_least_one_device_has_edid() {
-        let edids = DisplayDevice::list()
-            .iter()
-            .map(DisplayDevice::edid)
-            .collect::<Vec<_>>();
-        panic!("{:#?}", edids);
+    fn can_get_info() {
+        Info::get(&primary()).unwrap();
     }
 
     #[test]
-    fn list() {
-        let dev = DisplayDevice::primary().unwrap();
-        dev.available_reg_values().unwrap();
+    fn can_get_reg_keys() {
+        let key = primary().reg_key().unwrap();
+        panic!("{:?}", key);
+    }
+
+    #[test]
+    fn can_list_reg_values() {
+        let list = DisplayDevice::list()
+            .iter()
+            .map(DisplayDevice::reg_values)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        panic!("{:#?}", list);
     }
 }
