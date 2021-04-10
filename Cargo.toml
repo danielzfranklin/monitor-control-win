@@ -3,14 +3,18 @@ name = "monitor-control-win"
 version = "0.1.0"
 authors = ["Daniel Franklin <daniel@danielzfranklin.org>"]
 edition = "2018"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+description = "Control monitors on Windows (WIP, currently read-only)"
+license = "MIT"
+repository = "https://github.com/danielzfranklin/monitor-control-win"
+keywords = ["windows", "monitor", "display"]
+categories = ["os::windows-apis"]
 
 [dependencies]
-bitflags = "1.2.1"
-const_fn_assert = "0.1.2"
-derivative = "2.2.0"
+lazy_static = "1.4.0"
+regex = "1.4.5"
+registry = "1.1.0"
 thiserror = "1.0.24"
+tracing = "0.1.25"
 
 [target.'cfg(windows)'.dependencies.winapi]
 version = "0.3.9"
@@ -20,4 +24,4 @@ features = [
 ]
 
 [dev-dependencies]
-approx = "0.4.0"
+winit = "0.24.0"
