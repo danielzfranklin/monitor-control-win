@@ -9,6 +9,14 @@ repository = "https://github.com/danielzfranklin/monitor-control-win"
 keywords = ["windows", "monitor", "display"]
 categories = ["os::windows-apis"]
 
+[package.metadata.docs.rs]
+default-target = "x86_64-pc-windows-msvc"
+targets = [
+    "aarch64-pc-windows-msvc",
+    "i686-pc-windows-msvc",
+    "x86_64-pc-windows-msvc"
+]
+
 [dependencies]
 lazy_static = "1.4.0"
 regex = "1.4.5"
@@ -19,8 +27,16 @@ tracing = "0.1.25"
 [dependencies.winapi]
 version = "0.3.9"
 features = [
-    "errhandlingapi", "winuser", "winreg", "winerror", "setupapi", "impl-default", "impl-debug",
-    "guiddef", "handleapi", "physicalmonitorenumerationapi"
+    "errhandlingapi",
+    "winuser",
+    "winreg",
+    "winerror",
+    "setupapi",
+    "impl-default",
+    "impl-debug",
+    "guiddef",
+    "handleapi",
+    "physicalmonitorenumerationapi"
 ]
 
 [dev-dependencies]
