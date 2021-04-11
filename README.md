@@ -1,3 +1,7 @@
+# monitor-control-win
+
+[![Crates.io](https://img.shields.io/crates/v/monitor-control-win)](https://crates.io/crates/monitor-control-win)
+
 This library aims to handle getting information about and communicate with
 monitors on Windows. Currently only getting information is supported.
 
